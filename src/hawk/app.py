@@ -1,23 +1,140 @@
 """Main hawk-tui application."""
 
+from pathlib import Path
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import Footer, Header, Static
+from textual.widgets import Footer, Header, Static, ListView, ListItem, Label
+from textual.containers import Vertical
+from textual.reactive import reactive
 
 
-class ProjectList(Static):
-    """Left panel: list of projects."""
+# Path to projects
+PROJECTS_PATH = Path.home() / "ai" / "projects"
+
+
+class ProjectItem(ListItem):
+    """A single project in the list."""
+
+    def __init__(self, name: str, status: str = "active") -> None:
+        super().__init__()
+        self.project_name = name
+        self.project_status = status
 
     def compose(self) -> ComposeResult:
-        yield Static("● project1\n○ project2\n○ project3", id="project-items")
+        icon = "●" if self.project_status == "active" else "○"
+        yield Label(f"{icon} {self.project_name}")
+
+
+class ProjectList(ListView):
+    """Left panel: selectable list of projects."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.projects = []
+
+    def on_mount(self) -> None:
+        """Load projects when widget mounts."""
+        self.load_projects()
+
+    def load_projects(self) -> None:
+        """Scan ~/ai/projects/ and load project list."""
+        self.clear()
+        self.projects = []
+
+        if not PROJECTS_PATH.exists():
+            return
+
+        for project_dir in sorted(PROJECTS_PATH.iterdir()):
+            if project_dir.is_dir() and not project_dir.name.startswith("."):
+                # Check for project.md to get status
+                status = "active"
+                project_md = project_dir / "project.md"
+                if project_md.exists():
+                    content = project_md.read_text()
+                    if "Status: archived" in content:
+                        status = "archived"
+
+                self.projects.append(project_dir.name)
+                self.append(ProjectItem(project_dir.name, status))
 
 
 class DetailPanel(Static):
     """Right panel: project details."""
 
+    project_name = reactive("")
+
     def compose(self) -> ComposeResult:
-        yield Static("Select a project to view details", id="detail-content")
+        yield Vertical(
+            Static("Select a project", id="detail-header"),
+            Static("", id="detail-content"),
+            id="detail-inner"
+        )
+
+    def watch_project_name(self, name: str) -> None:
+        """Update display when project changes."""
+        if not name:
+            self.query_one("#detail-header", Static).update("Select a project")
+            self.query_one("#detail-content", Static).update("")
+            return
+
+        self.query_one("#detail-header", Static).update(f"[bold]{name}[/bold]")
+
+        # Load project details
+        project_path = PROJECTS_PATH / name
+        content_parts = []
+
+        # Read session.md for What's Next and Recent Work
+        session_md = project_path / "session.md"
+        if session_md.exists():
+            session_content = session_md.read_text()
+
+            # Extract What's Next
+            whats_next = self._extract_section(session_content, "## What's Next")
+            if whats_next:
+                content_parts.append("[green]## What's Next[/green]")
+                content_parts.append(whats_next)
+                content_parts.append("")
+
+            # Extract Recent Work
+            recent_work = self._extract_section(session_content, "## Recent Work")
+            if recent_work:
+                content_parts.append("[blue]## Recent Work[/blue]")
+                content_parts.append(recent_work)
+                content_parts.append("")
+
+        # Read gotchas.md
+        gotchas_md = project_path / "gotchas.md"
+        if gotchas_md.exists():
+            gotchas_content = gotchas_md.read_text()
+            # Get bullet points (lines starting with -)
+            gotchas = [line for line in gotchas_content.split("\n")
+                      if line.strip().startswith("-") or line.strip().startswith("•")]
+            if gotchas:
+                content_parts.append("[yellow]## Gotchas[/yellow]")
+                content_parts.append("\n".join(gotchas[:5]))  # Limit to 5
+
+        if content_parts:
+            self.query_one("#detail-content", Static).update("\n".join(content_parts))
+        else:
+            self.query_one("#detail-content", Static).update("No session.md found")
+
+    def _extract_section(self, content: str, header: str) -> str:
+        """Extract content under a markdown header."""
+        lines = content.split("\n")
+        in_section = False
+        section_lines = []
+
+        for line in lines:
+            if line.startswith(header):
+                in_section = True
+                continue
+            elif in_section and line.startswith("## "):
+                break
+            elif in_section:
+                if line.strip():
+                    section_lines.append(line)
+
+        return "\n".join(section_lines[:10])  # Limit lines
 
 
 class AlertsPanel(Static):
@@ -25,6 +142,24 @@ class AlertsPanel(Static):
 
     def compose(self) -> ComposeResult:
         yield Static("No alerts", id="alerts-content")
+
+    def check_alerts(self, projects: list[str]) -> None:
+        """Check for issues and update alerts."""
+        alerts = []
+
+        for name in projects:
+            project_path = PROJECTS_PATH / name
+
+            # Check for missing files
+            if not (project_path / "session.md").exists():
+                alerts.append(f"⚠ {name}: missing session.md")
+            if not (project_path / "gotchas.md").exists():
+                alerts.append(f"⚠ {name}: missing gotchas.md")
+
+        if alerts:
+            self.query_one("#alerts-content", Static).update("\n".join(alerts[:3]))
+        else:
+            self.query_one("#alerts-content", Static).update("✓ No alerts")
 
 
 class HawkApp(App):
@@ -38,10 +173,18 @@ class HawkApp(App):
         grid-rows: 1fr auto;
     }
 
-    #projects {
-        width: 20;
+    ProjectList {
+        width: 25;
         border: solid green;
-        padding: 1;
+        padding: 0 1;
+    }
+
+    ProjectList > ListItem {
+        padding: 0 1;
+    }
+
+    ProjectList > ListItem.--highlight {
+        background: $accent;
     }
 
     #details {
@@ -49,9 +192,15 @@ class HawkApp(App):
         padding: 1;
     }
 
+    #detail-header {
+        text-style: bold;
+        padding-bottom: 1;
+    }
+
     #alerts {
         column-span: 2;
-        height: 3;
+        height: auto;
+        max-height: 5;
         border: solid yellow;
         padding: 0 1;
     }
@@ -66,26 +215,59 @@ class HawkApp(App):
         Binding("f1", "help", "Help"),
         Binding("c", "check", "Check"),
         Binding("s", "sync", "Sync"),
+        Binding("enter", "select_project", "Open", show=False),
     ]
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield ProjectList(id="projects")
+        yield ProjectList()
         yield DetailPanel(id="details")
         yield AlertsPanel(id="alerts")
         yield Footer()
 
+    def on_mount(self) -> None:
+        """Focus project list on start."""
+        self.query_one(ProjectList).focus()
+        # Check alerts after projects load
+        self.set_timer(0.1, self._check_alerts)
+
+    def _check_alerts(self) -> None:
+        """Check alerts after mount."""
+        project_list = self.query_one(ProjectList)
+        alerts_panel = self.query_one(AlertsPanel)
+        alerts_panel.check_alerts(project_list.projects)
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Handle project selection."""
+        if isinstance(event.item, ProjectItem):
+            detail_panel = self.query_one(DetailPanel)
+            detail_panel.project_name = event.item.project_name
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        """Update details as user navigates."""
+        if isinstance(event.item, ProjectItem):
+            detail_panel = self.query_one(DetailPanel)
+            detail_panel.project_name = event.item.project_name
+
     def action_help(self) -> None:
         """Show help screen."""
-        self.notify("Help: Press q to quit, Enter to start session")
+        self.notify("Help: ↑↓ navigate, Enter select, q quit")
 
     def action_check(self) -> None:
         """Run integrity check."""
-        self.notify("Integrity check... (not implemented yet)")
+        self._check_alerts()
+        self.notify("Integrity check complete")
 
     def action_sync(self) -> None:
         """Sync projects from ~/ai/projects."""
-        self.notify("Syncing projects... (not implemented yet)")
+        project_list = self.query_one(ProjectList)
+        project_list.load_projects()
+        self._check_alerts()
+        self.notify(f"Synced {len(project_list.projects)} projects")
+
+    def action_select_project(self) -> None:
+        """Handle Enter key on project."""
+        self.notify("Start session: not implemented yet (Phase 5)")
 
 
 def main():
