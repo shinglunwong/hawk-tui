@@ -5,16 +5,36 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.screen import ModalScreen
-from textual.widgets import Footer, Header, Static, ListView, ListItem, Label, Button
+from textual.screen import ModalScreen, Screen
+from textual.widgets import Footer, Header, Static, ListView, ListItem, Label, Button, Input
 from textual.containers import Vertical, Horizontal, Center
 from textual.reactive import reactive
 
 
-# Path to projects
+# Paths
 PROJECTS_PATH = Path.home() / "ai" / "projects"
+CONFIG_PATH = Path.home() / "ai" / "projects" / "hawk-tui" / "data" / "config.toml"
+
+
+def load_config() -> dict:
+    """Load config from config.toml."""
+    if CONFIG_PATH.exists():
+        with open(CONFIG_PATH, "rb") as f:
+            return tomllib.load(f)
+    return {
+        "tools": {"ai_tools": ["claude", "opencode"], "default_ai_tool": "", "editor": "antigravity", "terminal": "iterm"},
+        "paths": {"projects": "~/ai/projects"}
+    }
+
+
+CONFIG = load_config()
 
 
 def get_git_branch(repo_path: Path) -> str:
@@ -38,7 +58,6 @@ def get_relative_time(dt: datetime) -> str:
     """Convert datetime to relative time string."""
     now = datetime.now()
     diff = now - dt
-
     if diff.days > 30:
         return f"{diff.days // 30} months ago"
     elif diff.days > 0:
@@ -47,8 +66,7 @@ def get_relative_time(dt: datetime) -> str:
         hours = diff.seconds // 3600
         return f"{hours} hours ago" if hours > 1 else "1 hour ago"
     elif diff.seconds > 60:
-        mins = diff.seconds // 60
-        return f"{mins} min ago"
+        return f"{diff.seconds // 60} min ago"
     else:
         return "just now"
 
@@ -58,7 +76,6 @@ def parse_repo_path(content: str) -> Path | None:
     for line in content.split("\n"):
         if line.startswith("Repo:"):
             path_str = line.replace("Repo:", "").strip()
-            # Expand ~ to home directory
             if path_str.startswith("~"):
                 path_str = str(Path.home()) + path_str[1:]
             return Path(path_str)
@@ -67,7 +84,6 @@ def parse_repo_path(content: str) -> Path | None:
 
 def launch_iterm_session(repo_path: Path, tool: str) -> None:
     """Launch iTerm with AI tool in the repo directory."""
-    # AppleScript to open new iTerm tab, cd, and run tool
     script = f'''
     tell application "iTerm"
         activate
@@ -84,29 +100,48 @@ def launch_iterm_session(repo_path: Path, tool: str) -> None:
     subprocess.run(["osascript", "-e", script], capture_output=True)
 
 
-class ToolSelectScreen(ModalScreen[str]):
-    """Modal to select AI tool."""
+# --- Screens ---
+
+class HelpScreen(ModalScreen):
+    """Help screen with shortcuts and tips."""
+
+    BINDINGS = [Binding("escape", "dismiss", "Close"), Binding("f1", "dismiss", "Close")]
 
     CSS = """
-    ToolSelectScreen {
-        align: center middle;
-    }
-    #tool-dialog {
-        width: 40;
-        height: 12;
+    HelpScreen { align: center middle; }
+    #help-dialog {
+        width: 60;
+        height: 20;
         border: thick $accent;
         background: $surface;
         padding: 1 2;
     }
-    #tool-title {
-        text-align: center;
-        text-style: bold;
-        padding-bottom: 1;
-    }
-    Button {
-        width: 100%;
-        margin: 1 0;
-    }
+    #help-title { text-align: center; text-style: bold; padding-bottom: 1; }
+    .section { padding-top: 1; color: $text; }
+    .section-title { text-style: bold; color: $accent; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="help-dialog"):
+            yield Static("hawk-tui Help", id="help-title")
+            yield Static("[bold cyan]Keyboard Shortcuts[/bold cyan]", classes="section-title")
+            yield Static("↑↓        Navigate projects\nEnter     Start AI session\ne         Open in editor\nc         Check integrity\ns         Sync projects\nF1        This help\nq         Quit", classes="section")
+            yield Static("[bold cyan]Daily Workflow[/bold cyan]", classes="section-title")
+            yield Static("Morning: read context → work → update session", classes="section")
+            yield Static("\n[dim]Press Escape or F1 to close[/dim]")
+
+    def action_dismiss(self) -> None:
+        self.app.pop_screen()
+
+
+class ToolSelectScreen(ModalScreen[str]):
+    """Modal to select AI tool."""
+
+    CSS = """
+    ToolSelectScreen { align: center middle; }
+    #tool-dialog { width: 40; height: 12; border: thick $accent; background: $surface; padding: 1 2; }
+    #tool-title { text-align: center; text-style: bold; padding-bottom: 1; }
+    Button { width: 100%; margin: 1 0; }
     """
 
     def compose(self) -> ComposeResult:
@@ -125,17 +160,105 @@ class ToolSelectScreen(ModalScreen[str]):
             self.dismiss("")
 
 
+class QuitScreen(ModalScreen[bool]):
+    """Quit confirmation screen."""
+
+    CSS = """
+    QuitScreen { align: center middle; }
+    #quit-dialog { width: 40; height: 8; border: thick $accent; background: $surface; padding: 1 2; }
+    #quit-title { text-align: center; text-style: bold; padding-bottom: 1; }
+    Horizontal { align: center middle; }
+    Button { margin: 0 1; }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="quit-dialog"):
+            yield Static("Quit hawk-tui?", id="quit-title")
+            with Horizontal():
+                yield Button("Quit", id="yes", variant="error")
+                yield Button("Cancel", id="no", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "yes")
+
+
+class CreateFileScreen(ModalScreen[bool]):
+    """Offer to create missing files."""
+
+    CSS = """
+    CreateFileScreen { align: center middle; }
+    #create-dialog { width: 50; height: 10; border: thick $accent; background: $surface; padding: 1 2; }
+    #create-title { text-align: center; text-style: bold; padding-bottom: 1; }
+    Horizontal { align: center middle; padding-top: 1; }
+    Button { margin: 0 1; }
+    """
+
+    def __init__(self, project: str, missing_files: list[str]) -> None:
+        super().__init__()
+        self.project = project
+        self.missing_files = missing_files
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="create-dialog"):
+            yield Static(f"Missing files in {self.project}", id="create-title")
+            yield Static(f"Missing: {', '.join(self.missing_files)}")
+            yield Static("Create from template?")
+            with Horizontal():
+                yield Button("Create", id="yes", variant="primary")
+                yield Button("Skip", id="no")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "yes")
+
+
+class RepoPathScreen(ModalScreen[str]):
+    """Prompt for repo path."""
+
+    CSS = """
+    RepoPathScreen { align: center middle; }
+    #repo-dialog { width: 60; height: 10; border: thick $accent; background: $surface; padding: 1 2; }
+    #repo-title { text-align: center; text-style: bold; padding-bottom: 1; }
+    Input { margin: 1 0; }
+    Horizontal { align: center middle; }
+    Button { margin: 0 1; }
+    """
+
+    def __init__(self, project: str) -> None:
+        super().__init__()
+        self.project = project
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="repo-dialog"):
+            yield Static(f"Enter repo path for {self.project}", id="repo-title")
+            yield Input(placeholder="~/Works/project-name", id="repo-input")
+            with Horizontal():
+                yield Button("Save", id="save", variant="primary")
+                yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            self.dismiss(self.query_one("#repo-input", Input).value)
+        else:
+            self.dismiss("")
+
+
+# --- Widgets ---
+
 class ProjectItem(ListItem):
     """A single project in the list."""
 
-    def __init__(self, name: str, status: str = "active") -> None:
+    def __init__(self, name: str, status: str = "active", has_warning: bool = False) -> None:
         super().__init__()
         self.project_name = name
         self.project_status = status
+        self.has_warning = has_warning
 
     def compose(self) -> ComposeResult:
         icon = "●" if self.project_status == "active" else "○"
-        yield Label(f"{icon} {self.project_name}")
+        warning = " ⚠" if self.has_warning else ""
+        style = "" if self.project_status == "active" else "[dim]"
+        end_style = "[/dim]" if self.project_status == "active" else ""
+        yield Label(f"{style}{icon} {self.project_name}{warning}{end_style}")
 
 
 class ProjectList(ListView):
@@ -146,29 +269,27 @@ class ProjectList(ListView):
         self.projects = []
 
     def on_mount(self) -> None:
-        """Load projects when widget mounts."""
         self.load_projects()
 
     def load_projects(self) -> None:
-        """Scan ~/ai/projects/ and load project list."""
         self.clear()
         self.projects = []
-
         if not PROJECTS_PATH.exists():
             return
-
         for project_dir in sorted(PROJECTS_PATH.iterdir()):
             if project_dir.is_dir() and not project_dir.name.startswith("."):
-                # Check for project.md to get status
                 status = "active"
+                has_warning = False
                 project_md = project_dir / "project.md"
                 if project_md.exists():
                     content = project_md.read_text()
                     if "Status: archived" in content:
                         status = "archived"
-
+                # Check for warnings
+                if not (project_dir / "session.md").exists() or not (project_dir / "gotchas.md").exists():
+                    has_warning = True
                 self.projects.append(project_dir.name)
-                self.append(ProjectItem(project_dir.name, status))
+                self.append(ProjectItem(project_dir.name, status, has_warning))
 
 
 class DetailPanel(Static):
@@ -186,7 +307,6 @@ class DetailPanel(Static):
         )
 
     def watch_project_name(self, name: str) -> None:
-        """Update display when project changes."""
         if not name:
             self.query_one("#detail-header", Static).update("Select a project")
             self.query_one("#detail-meta", Static).update("")
@@ -195,8 +315,6 @@ class DetailPanel(Static):
             return
 
         self.query_one("#detail-header", Static).update(f"[bold]{name}[/bold]")
-
-        # Load project details
         project_path = PROJECTS_PATH / name
         content_parts = []
         meta_parts = []
@@ -207,6 +325,8 @@ class DetailPanel(Static):
         if project_md.exists():
             project_content = project_md.read_text()
             repo_path = parse_repo_path(project_content)
+            if repo_path:
+                meta_parts.append(f"[dim]Repo: {repo_path}[/dim]")
 
         # Get git branch
         if repo_path and repo_path.exists():
@@ -214,88 +334,51 @@ class DetailPanel(Static):
             if branch:
                 meta_parts.append(f"[cyan]Branch:[/cyan] {branch}")
 
-        # Read session.md for What's Next and Recent Work
+        # Read session.md
         session_md = project_path / "session.md"
-        total_tasks = 0
-        done_tasks = 0
-
+        total_tasks = done_tasks = 0
         if session_md.exists():
             session_content = session_md.read_text()
-
-            # Get last modified time
             mtime = datetime.fromtimestamp(session_md.stat().st_mtime)
-            relative = get_relative_time(mtime)
-            date_str = mtime.strftime("%b %d")
-            meta_parts.append(f"[dim]{relative} ({date_str})[/dim]")
-
-            # Count checkboxes for progress
+            meta_parts.append(f"[dim]{get_relative_time(mtime)} ({mtime.strftime('%b %d')})[/dim]")
             done_tasks = len(re.findall(r'\[x\]', session_content, re.IGNORECASE))
             undone_tasks = len(re.findall(r'\[ \]', session_content))
             total_tasks = done_tasks + undone_tasks
-
-            # Extract What's Next
             whats_next = self._extract_section(session_content, "## What's Next")
             if whats_next:
-                content_parts.append("[green]## What's Next[/green]")
-                content_parts.append(whats_next)
-                content_parts.append("")
-
-            # Extract Recent Work
+                content_parts.extend(["[green]## What's Next[/green]", whats_next, ""])
             recent_work = self._extract_section(session_content, "## Recent Work")
             if recent_work:
-                content_parts.append("[blue]## Recent Work[/blue]")
-                content_parts.append(recent_work)
-                content_parts.append("")
+                content_parts.extend(["[blue]## Recent Work[/blue]", recent_work, ""])
 
-        # Update meta line
-        self.query_one("#detail-meta", Static).update("  ".join(meta_parts))
+        self.query_one("#detail-meta", Static).update("\n".join(meta_parts))
 
-        # Update progress bar
         if total_tasks > 0:
-            progress_pct = done_tasks / total_tasks
-            bar_width = 20
-            filled = int(bar_width * progress_pct)
-            empty = bar_width - filled
-            bar = "█" * filled + "░" * empty
-            self.query_one("#detail-progress", Static).update(
-                f"[green]{bar}[/green] {done_tasks}/{total_tasks} tasks"
-            )
+            filled = int(20 * done_tasks / total_tasks)
+            bar = "█" * filled + "░" * (20 - filled)
+            self.query_one("#detail-progress", Static).update(f"[green]{bar}[/green] {done_tasks}/{total_tasks} tasks")
         else:
             self.query_one("#detail-progress", Static).update("")
 
         # Read gotchas.md
         gotchas_md = project_path / "gotchas.md"
         if gotchas_md.exists():
-            gotchas_content = gotchas_md.read_text()
-            # Get bullet points (lines starting with -)
-            gotchas = [line for line in gotchas_content.split("\n")
-                      if line.strip().startswith("-") or line.strip().startswith("•")]
+            gotchas = [l for l in gotchas_md.read_text().split("\n") if l.strip().startswith(("-", "•"))]
             if gotchas:
-                content_parts.append("[yellow]## Gotchas[/yellow]")
-                content_parts.append("\n".join(gotchas[:5]))  # Limit to 5
+                content_parts.extend(["[yellow]## Gotchas[/yellow]", "\n".join(gotchas[:5])])
 
-        if content_parts:
-            self.query_one("#detail-content", Static).update("\n".join(content_parts))
-        else:
-            self.query_one("#detail-content", Static).update("No session.md found")
+        self.query_one("#detail-content", Static).update("\n".join(content_parts) if content_parts else "No session.md found")
 
     def _extract_section(self, content: str, header: str) -> str:
-        """Extract content under a markdown header."""
-        lines = content.split("\n")
-        in_section = False
-        section_lines = []
-
+        lines, in_section, section_lines = content.split("\n"), False, []
         for line in lines:
             if line.startswith(header):
                 in_section = True
-                continue
             elif in_section and line.startswith("## "):
                 break
-            elif in_section:
-                if line.strip():
-                    section_lines.append(line)
-
-        return "\n".join(section_lines[:10])  # Limit lines
+            elif in_section and line.strip():
+                section_lines.append(line)
+        return "\n".join(section_lines[:10])
 
 
 class AlertsPanel(Static):
@@ -304,202 +387,172 @@ class AlertsPanel(Static):
     def compose(self) -> ComposeResult:
         yield Static("No alerts", id="alerts-content")
 
-    def check_alerts(self, projects: list[str]) -> None:
-        """Check for issues and update alerts."""
+    def check_alerts(self, projects: list[str]) -> list[tuple[str, list[str]]]:
         alerts = []
-
+        missing_files_map = []
         for name in projects:
             project_path = PROJECTS_PATH / name
-
-            # Check for missing files
+            missing = []
             if not (project_path / "session.md").exists():
-                alerts.append(f"⚠ {name}: missing session.md")
+                missing.append("session.md")
             if not (project_path / "gotchas.md").exists():
-                alerts.append(f"⚠ {name}: missing gotchas.md")
-
-            # Check for missing repo path
+                missing.append("gotchas.md")
+            if missing:
+                alerts.append(f"⚠ {name}: missing {', '.join(missing)}")
+                missing_files_map.append((name, missing))
             project_md = project_path / "project.md"
             if project_md.exists():
-                content = project_md.read_text()
-                repo_path = parse_repo_path(content)
+                repo_path = parse_repo_path(project_md.read_text())
                 if repo_path and not repo_path.exists():
                     alerts.append(f"⚠ {name}: repo path not found")
+        self.query_one("#alerts-content", Static).update("\n".join(alerts[:3]) if alerts else "✓ No alerts")
+        return missing_files_map
 
-        if alerts:
-            self.query_one("#alerts-content", Static).update("\n".join(alerts[:3]))
-        else:
-            self.query_one("#alerts-content", Static).update("✓ No alerts")
 
+# --- Main App ---
 
 class HawkApp(App):
     """Main hawk-tui application."""
 
     TITLE = "hawk-tui"
     CSS = """
-    Screen {
-        layout: grid;
-        grid-size: 2 2;
-        grid-rows: 1fr auto;
-    }
-
-    ProjectList {
-        width: 25;
-        border: solid green;
-        padding: 0 1;
-    }
-
-    ProjectList > ListItem {
-        padding: 0 1;
-    }
-
-    ProjectList > ListItem.--highlight {
-        background: $accent;
-    }
-
-    #details {
-        border: solid green;
-        padding: 1;
-    }
-
-    #detail-header {
-        text-style: bold;
-    }
-
-    #detail-meta {
-        color: $text-muted;
-        padding-bottom: 1;
-    }
-
-    #detail-progress {
-        padding-bottom: 1;
-    }
-
-    #alerts {
-        column-span: 2;
-        height: auto;
-        max-height: 5;
-        border: solid yellow;
-        padding: 0 1;
-    }
-
-    Footer {
-        column-span: 2;
-    }
+    Screen { layout: grid; grid-size: 2 2; grid-rows: 1fr auto; }
+    ProjectList { width: 25; border: solid green; padding: 0 1; }
+    ProjectList > ListItem { padding: 0 1; }
+    ProjectList > ListItem.--highlight { background: $accent; }
+    #details { border: solid green; padding: 1; }
+    #detail-header { text-style: bold; }
+    #detail-meta { padding-bottom: 1; }
+    #detail-progress { padding-bottom: 1; }
+    #alerts { column-span: 2; height: auto; max-height: 5; border: solid yellow; padding: 0 1; }
+    Footer { column-span: 2; }
+    #empty-state { column-span: 2; row-span: 2; align: center middle; }
     """
 
     BINDINGS = [
-        Binding("q", "quit", "Quit"),
+        Binding("q", "quit_app", "Quit"),
         Binding("f1", "help", "Help"),
         Binding("c", "check", "Check"),
         Binding("s", "sync", "Sync"),
         Binding("e", "open_editor", "Editor"),
-        Binding("enter", "select_project", "Open", show=False),
+        Binding("enter", "select_project", "Session", show=False),
     ]
 
     current_project: str = ""
+    missing_files_map: list = []
 
     def compose(self) -> ComposeResult:
         yield Header()
-        yield ProjectList()
-        yield DetailPanel(id="details")
-        yield AlertsPanel(id="alerts")
+        project_list = ProjectList()
+        if not PROJECTS_PATH.exists() or not any(PROJECTS_PATH.iterdir()):
+            yield Static("[bold]Welcome to hawk-tui![/bold]\n\nNo projects found in ~/ai/projects/\n\nCreate a project folder to get started:\n  mkdir -p ~/ai/projects/my-project\n\nThen add project.md, session.md, gotchas.md", id="empty-state")
+        else:
+            yield project_list
+            yield DetailPanel(id="details")
+            yield AlertsPanel(id="alerts")
         yield Footer()
 
     def on_mount(self) -> None:
-        """Focus project list on start."""
-        self.query_one(ProjectList).focus()
-        # Check alerts after projects load
-        self.set_timer(0.1, self._check_alerts)
+        try:
+            self.query_one(ProjectList).focus()
+            self.set_timer(0.1, self._check_alerts)
+        except Exception:
+            pass
 
     def _check_alerts(self) -> None:
-        """Check alerts after mount."""
-        project_list = self.query_one(ProjectList)
-        alerts_panel = self.query_one(AlertsPanel)
-        alerts_panel.check_alerts(project_list.projects)
-
-    def on_list_view_selected(self, event: ListView.Selected) -> None:
-        """Handle project selection."""
-        if isinstance(event.item, ProjectItem):
-            self.current_project = event.item.project_name
-            detail_panel = self.query_one(DetailPanel)
-            detail_panel.project_name = event.item.project_name
+        try:
+            self.missing_files_map = self.query_one(AlertsPanel).check_alerts(self.query_one(ProjectList).projects)
+        except Exception:
+            pass
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        """Update details as user navigates."""
         if isinstance(event.item, ProjectItem):
             self.current_project = event.item.project_name
-            detail_panel = self.query_one(DetailPanel)
-            detail_panel.project_name = event.item.project_name
+            self.query_one(DetailPanel).project_name = event.item.project_name
 
     def action_help(self) -> None:
-        """Show help screen."""
-        self.notify("Help: ↑↓ navigate, Enter session, e editor, q quit")
+        self.push_screen(HelpScreen())
+
+    def action_quit_app(self) -> None:
+        def handle_quit(confirmed: bool) -> None:
+            if confirmed:
+                self.exit()
+        self.push_screen(QuitScreen(), handle_quit)
 
     def action_check(self) -> None:
-        """Run integrity check."""
         self._check_alerts()
-        self.notify("Integrity check complete")
+        # Offer to create missing files
+        if self.missing_files_map:
+            project, missing = self.missing_files_map[0]
+            def handle_create(create: bool) -> None:
+                if create:
+                    self._create_missing_files(project, missing)
+                    self._check_alerts()
+                    self.query_one(ProjectList).load_projects()
+            self.push_screen(CreateFileScreen(project, missing), handle_create)
+        else:
+            self.notify("✓ All files present")
+
+    def _create_missing_files(self, project: str, missing: list[str]) -> None:
+        project_path = PROJECTS_PATH / project
+        if "session.md" in missing:
+            (project_path / "session.md").write_text(f"# {project} - Session\n\n## Current Focus\n\n## What's Next\n- [ ] Task 1\n\n## Recent Work\n- [x] Initial setup\n")
+        if "gotchas.md" in missing:
+            (project_path / "gotchas.md").write_text("# Gotchas & Traps\n\n---\n\n<!-- Add gotchas as discovered -->\n")
+        self.notify(f"Created missing files for {project}")
 
     def action_sync(self) -> None:
-        """Sync projects from ~/ai/projects."""
-        project_list = self.query_one(ProjectList)
-        project_list.load_projects()
+        self.query_one(ProjectList).load_projects()
         self._check_alerts()
-        self.notify(f"Synced {len(project_list.projects)} projects")
+        self.notify(f"Synced {len(self.query_one(ProjectList).projects)} projects")
 
     def action_select_project(self) -> None:
-        """Handle Enter key on project - show tool selection."""
         if not self.current_project:
             self.notify("No project selected")
             return
-
         project_path = PROJECTS_PATH / self.current_project
         project_md = project_path / "project.md"
-
         if not project_md.exists():
             self.notify("No project.md found")
             return
-
-        content = project_md.read_text()
-        repo_path = parse_repo_path(content)
-
-        if not repo_path or not repo_path.exists():
-            self.notify("No valid repo path found")
+        repo_path = parse_repo_path(project_md.read_text())
+        if not repo_path:
+            def handle_repo_path(path: str) -> None:
+                if path:
+                    # Save to project.md
+                    content = project_md.read_text()
+                    with open(project_md, "w") as f:
+                        f.write(content.rstrip() + f"\n\nRepo: {path}\n")
+                    self.notify(f"Saved repo path: {path}")
+            self.push_screen(RepoPathScreen(self.current_project), handle_repo_path)
             return
-
-        def handle_tool_selection(tool: str) -> None:
+        if not repo_path.exists():
+            self.notify(f"Repo path not found: {repo_path}")
+            return
+        def handle_tool(tool: str) -> None:
             if tool:
                 launch_iterm_session(repo_path, tool)
                 self.notify(f"Launching {tool} for {self.current_project}")
-
-        self.push_screen(ToolSelectScreen(), handle_tool_selection)
+        self.push_screen(ToolSelectScreen(), handle_tool)
 
     def action_open_editor(self) -> None:
-        """Open current project in editor."""
         if not self.current_project:
             self.notify("No project selected")
             return
-
-        project_path = PROJECTS_PATH / self.current_project
-        project_md = project_path / "project.md"
-
-        if project_md.exists():
-            content = project_md.read_text()
-            repo_path = parse_repo_path(content)
-            if repo_path and repo_path.exists():
-                try:
-                    subprocess.Popen(["antigravity", str(repo_path)])
-                    self.notify(f"Opening {self.current_project} in editor")
-                except Exception as e:
-                    self.notify(f"Failed to open editor: {e}")
-            else:
-                self.notify("No valid repo path found")
-        else:
+        project_md = PROJECTS_PATH / self.current_project / "project.md"
+        if not project_md.exists():
             self.notify("No project.md found")
+            return
+        repo_path = parse_repo_path(project_md.read_text())
+        if repo_path and repo_path.exists():
+            editor = CONFIG.get("tools", {}).get("editor", "antigravity")
+            subprocess.Popen([editor, str(repo_path)])
+            self.notify(f"Opening in {editor}")
+        else:
+            self.notify("No valid repo path")
 
 
 def main():
-    """Entry point for hawk-tui."""
     app = HawkApp()
     app.run()
 
