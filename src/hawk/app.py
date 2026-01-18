@@ -20,7 +20,8 @@ from textual.reactive import reactive
 
 from hawk.db import (
     Client, get_all_clients, get_client, create_client, update_client, delete_client,
-    get_client_for_project, link_project_to_client, get_projects_for_client
+    get_client_for_project, link_project_to_client, get_projects_for_client,
+    unlink_project_from_client, get_upcoming_payments
 )
 
 
@@ -284,11 +285,12 @@ class ClientFormScreen(ModalScreen[Optional[Client]]):
 
     CSS = """
     ClientFormScreen { align: center middle; }
-    #client-dialog { width: 70; height: 22; border: thick $accent; background: $surface; padding: 1 2; }
+    #client-dialog { width: 75; height: 30; border: thick $accent; background: $surface; padding: 1 2; }
     #client-title { text-align: center; text-style: bold; padding-bottom: 1; }
     .field-row { height: 3; }
-    .field-label { width: 12; padding-top: 1; }
+    .field-label { width: 14; padding-top: 1; }
     .field-input { width: 1fr; }
+    .section-title { text-style: bold; color: $accent; padding-top: 1; }
     Horizontal { align: center middle; padding-top: 1; }
     Button { margin: 0 1; }
     """
@@ -301,6 +303,10 @@ class ClientFormScreen(ModalScreen[Optional[Client]]):
         title = "Edit Client" if self.client else "Add Client"
         with Vertical(id="client-dialog"):
             yield Static(title, id="client-title")
+            # Basic info
+            with Horizontal(classes="field-row"):
+                yield Static("ID (slug):", classes="field-label")
+                yield Input(value=self.client.id if self.client else "", id="client-id", classes="field-input", disabled=bool(self.client))
             with Horizontal(classes="field-row"):
                 yield Static("Name:", classes="field-label")
                 yield Input(value=self.client.name if self.client else "", id="name", classes="field-input")
@@ -313,9 +319,17 @@ class ClientFormScreen(ModalScreen[Optional[Client]]):
             with Horizontal(classes="field-row"):
                 yield Static("Phone:", classes="field-label")
                 yield Input(value=self.client.phone if self.client else "", id="phone", classes="field-input")
+            # Billing
+            yield Static("Billing", classes="section-title")
             with Horizontal(classes="field-row"):
-                yield Static("Address:", classes="field-label")
-                yield Input(value=self.client.address if self.client else "", id="address", classes="field-input")
+                yield Static("Cycle:", classes="field-label")
+                yield Input(value=self.client.billing_cycle if self.client else "annual", id="billing-cycle", classes="field-input", placeholder="annual / monthly / one-time")
+            with Horizontal(classes="field-row"):
+                yield Static("Amount:", classes="field-label")
+                yield Input(value=str(self.client.amount) if self.client else "0", id="amount", classes="field-input")
+            with Horizontal(classes="field-row"):
+                yield Static("Next Payment:", classes="field-label")
+                yield Input(value=self.client.next_payment if self.client else "", id="next-payment", classes="field-input", placeholder="YYYY-MM-DD")
             with Horizontal(classes="field-row"):
                 yield Static("Notes:", classes="field-label")
                 yield Input(value=self.client.notes if self.client else "", id="notes", classes="field-input")
@@ -325,18 +339,27 @@ class ClientFormScreen(ModalScreen[Optional[Client]]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "save":
+            client_id = self.query_one("#client-id", Input).value.strip()
             name = self.query_one("#name", Input).value.strip()
-            if not name:
-                self.app.notify("Name is required")
+            if not client_id or not name:
+                self.app.notify("ID and Name are required")
                 return
+            try:
+                amount = int(self.query_one("#amount", Input).value.strip() or "0")
+            except ValueError:
+                amount = 0
             client = Client(
-                id=self.client.id if self.client else None,
+                id=client_id,
                 name=name,
                 company=self.query_one("#company", Input).value.strip(),
                 email=self.query_one("#email", Input).value.strip(),
                 phone=self.query_one("#phone", Input).value.strip(),
-                address=self.query_one("#address", Input).value.strip(),
+                billing_cycle=self.query_one("#billing-cycle", Input).value.strip() or "annual",
+                amount=amount,
+                currency=self.client.currency if self.client else "CAD",
+                next_payment=self.query_one("#next-payment", Input).value.strip(),
                 notes=self.query_one("#notes", Input).value.strip(),
+                projects=self.client.projects if self.client else [],
             )
             self.dismiss(client)
         else:
@@ -377,7 +400,7 @@ class DeleteClientScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class LinkClientScreen(ModalScreen[Optional[int]]):
+class LinkClientScreen(ModalScreen[Optional[str]]):
     """Link a project to a client."""
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
@@ -391,12 +414,12 @@ class LinkClientScreen(ModalScreen[Optional[int]]):
     Button { margin: 0 1; }
     """
 
-    def __init__(self, project_name: str, current_client_id: Optional[int] = None) -> None:
+    def __init__(self, project_name: str, current_client_id: Optional[str] = None) -> None:
         super().__init__()
         self.project_name = project_name
         self.current_client_id = current_client_id
         self.clients = get_all_clients()
-        self.selected_id: Optional[int] = current_client_id
+        self.selected_id: Optional[str] = current_client_id
 
     def compose(self) -> ComposeResult:
         with Vertical(id="link-dialog"):
@@ -415,7 +438,7 @@ class LinkClientScreen(ModalScreen[Optional[int]]):
             if event.item.id == "client-none":
                 self.selected_id = None
             else:
-                self.selected_id = int(event.item.id.replace("client-", ""))
+                self.selected_id = event.item.id.replace("client-", "")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "link":
@@ -603,7 +626,14 @@ class ClientItem(ListItem):
         self.client = client
 
     def compose(self) -> ComposeResult:
-        display = f"● {self.client.name}"
+        status = self.client.payment_status()
+        if status == "overdue":
+            icon = "[red]✗[/red]"
+        elif status == "due_soon":
+            icon = "[yellow]⚠[/yellow]"
+        else:
+            icon = "[green]✓[/green]"
+        display = f"{icon} {self.client.name}"
         if self.client.company:
             display += f" [dim]({self.client.company})[/dim]"
         yield Label(display)
@@ -629,19 +659,21 @@ class ClientList(ListView):
 class ClientDetailPanel(Static):
     """Right panel: client details."""
 
-    client_id = reactive(0)
+    client_id = reactive("")
 
     def compose(self) -> ComposeResult:
         yield Vertical(
             Static("Select a client", id="client-header"),
+            Static("", id="client-billing"),
             Static("", id="client-info"),
             Static("", id="client-projects"),
             id="client-inner"
         )
 
-    def watch_client_id(self, client_id: int) -> None:
+    def watch_client_id(self, client_id: str) -> None:
         if not client_id:
             self.query_one("#client-header", Static).update("Select a client")
+            self.query_one("#client-billing", Static).update("")
             self.query_one("#client-info", Static).update("")
             self.query_one("#client-projects", Static).update("")
             return
@@ -652,6 +684,23 @@ class ClientDetailPanel(Static):
 
         self.query_one("#client-header", Static).update(f"[bold]{client.name}[/bold]")
 
+        # Billing info
+        billing_parts = []
+        status = client.payment_status()
+        days = client.days_until_payment()
+        if status == "overdue":
+            billing_parts.append(f"[red bold]⚠ OVERDUE by {abs(days)} days[/red bold]")
+        elif status == "due_soon":
+            billing_parts.append(f"[yellow]Due in {days} days[/yellow]")
+        elif client.next_payment:
+            billing_parts.append(f"[green]✓ Paid[/green] (next: {client.next_payment})")
+
+        if client.amount:
+            billing_parts.append(f"[cyan]Amount:[/cyan] ${client.amount} {client.currency} ({client.billing_cycle})")
+
+        self.query_one("#client-billing", Static).update("\n".join(billing_parts) if billing_parts else "")
+
+        # Contact info
         info_parts = []
         if client.company:
             info_parts.append(f"[cyan]Company:[/cyan] {client.company}")
@@ -659,17 +708,14 @@ class ClientDetailPanel(Static):
             info_parts.append(f"[cyan]Email:[/cyan] {client.email}")
         if client.phone:
             info_parts.append(f"[cyan]Phone:[/cyan] {client.phone}")
-        if client.address:
-            info_parts.append(f"[cyan]Address:[/cyan] {client.address}")
         if client.notes:
-            info_parts.append(f"\n[yellow]Notes:[/yellow]\n{client.notes}")
+            info_parts.append(f"[dim]{client.notes}[/dim]")
 
-        self.query_one("#client-info", Static).update("\n".join(info_parts) if info_parts else "[dim]No details[/dim]")
+        self.query_one("#client-info", Static).update("\n".join(info_parts) if info_parts else "")
 
         # Show linked projects
-        projects = get_projects_for_client(client_id)
-        if projects:
-            self.query_one("#client-projects", Static).update(f"\n[green]Projects:[/green]\n" + "\n".join(f"  • {p}" for p in projects))
+        if client.projects:
+            self.query_one("#client-projects", Static).update(f"\n[green]Projects:[/green]\n" + "\n".join(f"  • {p}" for p in client.projects))
         else:
             self.query_one("#client-projects", Static).update("\n[dim]No linked projects[/dim]")
 
@@ -711,7 +757,7 @@ class HawkApp(App):
     ]
 
     current_project: str = ""
-    current_client_id: int = 0
+    current_client_id: str = ""
     current_view: str = "projects"  # "projects" or "clients"
     missing_files_map: list = []
 
@@ -900,9 +946,9 @@ class HawkApp(App):
         def handle_delete(confirmed: bool) -> None:
             if confirmed:
                 delete_client(self.current_client_id)
-                self.current_client_id = 0
+                self.current_client_id = ""
                 self.query_one(ClientList).load_clients()
-                self.query_one(ClientDetailPanel).client_id = 0
+                self.query_one(ClientDetailPanel).client_id = ""
                 self.notify(f"Deleted client: {client.name}")
         self.push_screen(DeleteClientScreen(client.name), handle_delete)
 
@@ -913,9 +959,8 @@ class HawkApp(App):
             return
         current_client = get_client_for_project(self.current_project)
         current_id = current_client.id if current_client else None
-        def handle_link(client_id: Optional[int]) -> None:
+        def handle_link(client_id: Optional[str]) -> None:
             if client_id is None and current_id is not None:
-                from hawk.db import unlink_project_from_client
                 unlink_project_from_client(self.current_project)
                 self.notify(f"Unlinked {self.current_project}")
             elif client_id is not None:

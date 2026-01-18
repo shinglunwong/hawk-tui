@@ -1,170 +1,187 @@
-"""Database operations for hawk-tui."""
+"""Client data operations using TOML file."""
 
-import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field, asdict
+from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
 
-DB_PATH = Path.home() / "ai" / "projects" / "hawk-tui" / "data" / "hawk.db"
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
+import tomli_w
+
+CLIENTS_PATH = Path.home() / "ai" / "clients.toml"
 
 
 @dataclass
 class Client:
-    id: Optional[int]
+    id: str  # slug, e.g. "missionperform"
     name: str
-    email: str = ""
     company: str = ""
+    email: str = ""
     phone: str = ""
     address: str = ""
     notes: str = ""
+    billing_cycle: str = "annual"  # annual, monthly, one-time
+    amount: int = 0  # in dollars
+    currency: str = "CAD"
+    next_payment: str = ""  # YYYY-MM-DD
+    projects: list[str] = field(default_factory=list)
+
+    def payment_status(self) -> str:
+        """Return payment status: paid, due_soon, overdue, or none."""
+        if not self.next_payment:
+            return "none"
+        try:
+            next_date = date.fromisoformat(self.next_payment)
+            today = date.today()
+            days_until = (next_date - today).days
+            if days_until < 0:
+                return "overdue"
+            elif days_until <= 14:
+                return "due_soon"
+            else:
+                return "paid"
+        except ValueError:
+            return "none"
+
+    def days_until_payment(self) -> Optional[int]:
+        """Return days until next payment, negative if overdue."""
+        if not self.next_payment:
+            return None
+        try:
+            next_date = date.fromisoformat(self.next_payment)
+            return (next_date - date.today()).days
+        except ValueError:
+            return None
 
 
-def get_connection() -> sqlite3.Connection:
-    """Get database connection, creating tables if needed."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    _init_tables(conn)
-    return conn
+def _load_clients() -> list[dict]:
+    """Load clients from TOML file."""
+    if not CLIENTS_PATH.exists():
+        return []
+    with open(CLIENTS_PATH, "rb") as f:
+        data = tomllib.load(f)
+    return data.get("clients", [])
 
 
-def _init_tables(conn: sqlite3.Connection) -> None:
-    """Create tables if they don't exist."""
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS clients (
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            email TEXT DEFAULT '',
-            company TEXT DEFAULT '',
-            phone TEXT DEFAULT '',
-            address TEXT DEFAULT '',
-            notes TEXT DEFAULT '',
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS project_clients (
-            project_slug TEXT NOT NULL,
-            client_id INTEGER NOT NULL,
-            PRIMARY KEY (project_slug, client_id),
-            FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
-        )
-    """)
-    conn.commit()
+def _save_clients(clients: list[dict]) -> None:
+    """Save clients to TOML file."""
+    CLIENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(CLIENTS_PATH, "wb") as f:
+        tomli_w.dump({"clients": clients}, f)
+
+
+def _dict_to_client(d: dict) -> Client:
+    """Convert dict to Client dataclass."""
+    return Client(
+        id=d.get("id", ""),
+        name=d.get("name", ""),
+        company=d.get("company", ""),
+        email=d.get("email", ""),
+        phone=d.get("phone", ""),
+        address=d.get("address", ""),
+        notes=d.get("notes", ""),
+        billing_cycle=d.get("billing_cycle", "annual"),
+        amount=d.get("amount", 0),
+        currency=d.get("currency", "CAD"),
+        next_payment=d.get("next_payment", ""),
+        projects=d.get("projects", []),
+    )
+
+
+def _client_to_dict(c: Client) -> dict:
+    """Convert Client to dict for TOML."""
+    return asdict(c)
 
 
 # --- Client CRUD ---
 
 def get_all_clients() -> list[Client]:
     """Get all clients."""
-    conn = get_connection()
-    rows = conn.execute("SELECT * FROM clients ORDER BY name").fetchall()
-    conn.close()
-    return [Client(
-        id=row["id"],
-        name=row["name"],
-        email=row["email"],
-        company=row["company"],
-        phone=row["phone"],
-        address=row["address"],
-        notes=row["notes"],
-    ) for row in rows]
+    return [_dict_to_client(d) for d in _load_clients()]
 
 
-def get_client(client_id: int) -> Optional[Client]:
+def get_client(client_id: str) -> Optional[Client]:
     """Get a single client by ID."""
-    conn = get_connection()
-    row = conn.execute("SELECT * FROM clients WHERE id = ?", (client_id,)).fetchone()
-    conn.close()
-    if not row:
-        return None
-    return Client(
-        id=row["id"],
-        name=row["name"],
-        email=row["email"],
-        company=row["company"],
-        phone=row["phone"],
-        address=row["address"],
-        notes=row["notes"],
-    )
+    for d in _load_clients():
+        if d.get("id") == client_id:
+            return _dict_to_client(d)
+    return None
 
 
-def create_client(client: Client) -> int:
+def create_client(client: Client) -> str:
     """Create a new client, return ID."""
-    conn = get_connection()
-    cursor = conn.execute(
-        "INSERT INTO clients (name, email, company, phone, address, notes) VALUES (?, ?, ?, ?, ?, ?)",
-        (client.name, client.email, client.company, client.phone, client.address, client.notes)
-    )
-    conn.commit()
-    client_id = cursor.lastrowid
-    conn.close()
-    return client_id
+    clients = _load_clients()
+    clients.append(_client_to_dict(client))
+    _save_clients(clients)
+    return client.id
 
 
 def update_client(client: Client) -> None:
     """Update an existing client."""
-    conn = get_connection()
-    conn.execute(
-        "UPDATE clients SET name=?, email=?, company=?, phone=?, address=?, notes=? WHERE id=?",
-        (client.name, client.email, client.company, client.phone, client.address, client.notes, client.id)
-    )
-    conn.commit()
-    conn.close()
+    clients = _load_clients()
+    for i, d in enumerate(clients):
+        if d.get("id") == client.id:
+            clients[i] = _client_to_dict(client)
+            break
+    _save_clients(clients)
 
 
-def delete_client(client_id: int) -> None:
+def delete_client(client_id: str) -> None:
     """Delete a client."""
-    conn = get_connection()
-    conn.execute("DELETE FROM clients WHERE id = ?", (client_id,))
-    conn.commit()
-    conn.close()
+    clients = [d for d in _load_clients() if d.get("id") != client_id]
+    _save_clients(clients)
 
 
 # --- Project-Client linking ---
 
 def get_client_for_project(project_slug: str) -> Optional[Client]:
     """Get the client linked to a project."""
-    conn = get_connection()
-    row = conn.execute("""
-        SELECT c.* FROM clients c
-        JOIN project_clients pc ON c.id = pc.client_id
-        WHERE pc.project_slug = ?
-    """, (project_slug,)).fetchone()
-    conn.close()
-    if not row:
-        return None
-    return Client(
-        id=row["id"],
-        name=row["name"],
-        email=row["email"],
-        company=row["company"],
-        phone=row["phone"],
-        address=row["address"],
-        notes=row["notes"],
-    )
+    for client in get_all_clients():
+        if project_slug in client.projects:
+            return client
+    return None
 
 
-def link_project_to_client(project_slug: str, client_id: int) -> None:
+def link_project_to_client(project_slug: str, client_id: str) -> None:
     """Link a project to a client."""
-    conn = get_connection()
-    conn.execute("DELETE FROM project_clients WHERE project_slug = ?", (project_slug,))
-    conn.execute("INSERT INTO project_clients (project_slug, client_id) VALUES (?, ?)", (project_slug, client_id))
-    conn.commit()
-    conn.close()
+    clients = _load_clients()
+    for d in clients:
+        # Remove from other clients first
+        if project_slug in d.get("projects", []):
+            d["projects"].remove(project_slug)
+        # Add to target client
+        if d.get("id") == client_id:
+            if "projects" not in d:
+                d["projects"] = []
+            if project_slug not in d["projects"]:
+                d["projects"].append(project_slug)
+    _save_clients(clients)
 
 
 def unlink_project_from_client(project_slug: str) -> None:
-    """Remove client link from project."""
-    conn = get_connection()
-    conn.execute("DELETE FROM project_clients WHERE project_slug = ?", (project_slug,))
-    conn.commit()
-    conn.close()
+    """Remove project from any client."""
+    clients = _load_clients()
+    for d in clients:
+        if project_slug in d.get("projects", []):
+            d["projects"].remove(project_slug)
+    _save_clients(clients)
 
 
-def get_projects_for_client(client_id: int) -> list[str]:
+def get_projects_for_client(client_id: str) -> list[str]:
     """Get all project slugs linked to a client."""
-    conn = get_connection()
-    rows = conn.execute("SELECT project_slug FROM project_clients WHERE client_id = ?", (client_id,)).fetchall()
-    conn.close()
-    return [row["project_slug"] for row in rows]
+    client = get_client(client_id)
+    return client.projects if client else []
+
+
+def get_upcoming_payments(days: int = 14) -> list[Client]:
+    """Get clients with payments due within N days."""
+    result = []
+    for client in get_all_clients():
+        status = client.payment_status()
+        if status in ("due_soon", "overdue"):
+            result.append(client)
+    return result
