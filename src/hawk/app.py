@@ -256,9 +256,10 @@ class ProjectItem(ListItem):
     def compose(self) -> ComposeResult:
         icon = "●" if self.project_status == "active" else "○"
         warning = " ⚠" if self.has_warning else ""
-        style = "" if self.project_status == "active" else "[dim]"
-        end_style = "[/dim]" if self.project_status == "active" else ""
-        yield Label(f"{style}{icon} {self.project_name}{warning}{end_style}")
+        if self.project_status == "active":
+            yield Label(f"{icon} {self.project_name}{warning}")
+        else:
+            yield Label(f"[dim]{icon} {self.project_name}{warning}[/dim]")
 
 
 class ProjectList(ListView):
