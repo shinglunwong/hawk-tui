@@ -12,7 +12,7 @@ except ImportError:
 
 import tomli_w
 
-CLIENTS_PATH = Path.home() / "ai" / "clients.toml"
+CLIENTS_PATH = Path.home() / "ai" / "projects" / "hawk-tui" / "data" / "clients.toml"
 
 
 @dataclass
