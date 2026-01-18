@@ -4,6 +4,7 @@ import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 try:
     import tomllib
@@ -14,8 +15,13 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Footer, Header, Static, ListView, ListItem, Label, Button, Input
-from textual.containers import Vertical, Horizontal, Center
+from textual.containers import Vertical, Horizontal, Center, Grid
 from textual.reactive import reactive
+
+from hawk.db import (
+    Client, get_all_clients, get_client, create_client, update_client, delete_client,
+    get_client_for_project, link_project_to_client, get_projects_for_client
+)
 
 
 # Paths
@@ -117,7 +123,7 @@ class HelpScreen(ModalScreen):
     HelpScreen { align: center middle; }
     #help-dialog {
         width: 60;
-        height: 20;
+        height: 26;
         border: thick $accent;
         background: $surface;
         padding: 1 2;
@@ -130,11 +136,14 @@ class HelpScreen(ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id="help-dialog"):
             yield Static("hawk-tui Help", id="help-title")
-            yield Static("[bold cyan]Keyboard Shortcuts[/bold cyan]", classes="section-title")
-            yield Static("↑↓        Navigate projects\na         Start AI session\ne         Open in editor\nc         Check integrity\ns         Sync projects\nF1        This help\nq         Quit", classes="section")
-            yield Static("[bold cyan]Daily Workflow[/bold cyan]", classes="section-title")
-            yield Static("Morning: read context → work → update session", classes="section")
-            yield Static("\n[dim]Press Escape or F1 to close[/dim]")
+            yield Static("[bold cyan]Navigation[/bold cyan]", classes="section-title")
+            yield Static("Tab       Switch Projects/Clients\n↑↓        Navigate list", classes="section")
+            yield Static("[bold cyan]Projects View[/bold cyan]", classes="section-title")
+            yield Static("a         Start AI session\ne         Open in editor\nl         Link to client\nc         Check integrity\ns         Sync projects", classes="section")
+            yield Static("[bold cyan]Clients View[/bold cyan]", classes="section-title")
+            yield Static("n         New client\nEnter     Edit client\nd         Delete client", classes="section")
+            yield Static("[bold cyan]General[/bold cyan]", classes="section-title")
+            yield Static("F1        This help\nq         Quit", classes="section")
 
     def action_dismiss(self) -> None:
         self.app.pop_screen()
@@ -246,6 +255,141 @@ class RepoPathScreen(ModalScreen[str]):
             self.dismiss(self.query_one("#repo-input", Input).value)
         else:
             self.dismiss("")
+
+
+class ClientFormScreen(ModalScreen[Optional[Client]]):
+    """Add or edit a client."""
+
+    CSS = """
+    ClientFormScreen { align: center middle; }
+    #client-dialog { width: 70; height: 22; border: thick $accent; background: $surface; padding: 1 2; }
+    #client-title { text-align: center; text-style: bold; padding-bottom: 1; }
+    .field-row { height: 3; }
+    .field-label { width: 12; padding-top: 1; }
+    .field-input { width: 1fr; }
+    Horizontal { align: center middle; padding-top: 1; }
+    Button { margin: 0 1; }
+    """
+
+    def __init__(self, client: Optional[Client] = None) -> None:
+        super().__init__()
+        self.client = client
+
+    def compose(self) -> ComposeResult:
+        title = "Edit Client" if self.client else "Add Client"
+        with Vertical(id="client-dialog"):
+            yield Static(title, id="client-title")
+            with Horizontal(classes="field-row"):
+                yield Static("Name:", classes="field-label")
+                yield Input(value=self.client.name if self.client else "", id="name", classes="field-input")
+            with Horizontal(classes="field-row"):
+                yield Static("Company:", classes="field-label")
+                yield Input(value=self.client.company if self.client else "", id="company", classes="field-input")
+            with Horizontal(classes="field-row"):
+                yield Static("Email:", classes="field-label")
+                yield Input(value=self.client.email if self.client else "", id="email", classes="field-input")
+            with Horizontal(classes="field-row"):
+                yield Static("Phone:", classes="field-label")
+                yield Input(value=self.client.phone if self.client else "", id="phone", classes="field-input")
+            with Horizontal(classes="field-row"):
+                yield Static("Address:", classes="field-label")
+                yield Input(value=self.client.address if self.client else "", id="address", classes="field-input")
+            with Horizontal(classes="field-row"):
+                yield Static("Notes:", classes="field-label")
+                yield Input(value=self.client.notes if self.client else "", id="notes", classes="field-input")
+            with Horizontal():
+                yield Button("Save", id="save", variant="primary")
+                yield Button("Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            name = self.query_one("#name", Input).value.strip()
+            if not name:
+                self.app.notify("Name is required")
+                return
+            client = Client(
+                id=self.client.id if self.client else None,
+                name=name,
+                company=self.query_one("#company", Input).value.strip(),
+                email=self.query_one("#email", Input).value.strip(),
+                phone=self.query_one("#phone", Input).value.strip(),
+                address=self.query_one("#address", Input).value.strip(),
+                notes=self.query_one("#notes", Input).value.strip(),
+            )
+            self.dismiss(client)
+        else:
+            self.dismiss(None)
+
+
+class DeleteClientScreen(ModalScreen[bool]):
+    """Confirm client deletion."""
+
+    CSS = """
+    DeleteClientScreen { align: center middle; }
+    #delete-dialog { width: 45; height: 8; border: thick $accent; background: $surface; padding: 1 2; }
+    #delete-title { text-align: center; text-style: bold; padding-bottom: 1; }
+    Horizontal { align: center middle; }
+    Button { margin: 0 1; }
+    """
+
+    def __init__(self, client_name: str) -> None:
+        super().__init__()
+        self.client_name = client_name
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="delete-dialog"):
+            yield Static(f"Delete {self.client_name}?", id="delete-title")
+            with Horizontal():
+                yield Button("Delete", id="yes", variant="error")
+                yield Button("Cancel", id="no", variant="primary")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "yes")
+
+
+class LinkClientScreen(ModalScreen[Optional[int]]):
+    """Link a project to a client."""
+
+    CSS = """
+    LinkClientScreen { align: center middle; }
+    #link-dialog { width: 50; height: 16; border: thick $accent; background: $surface; padding: 1 2; }
+    #link-title { text-align: center; text-style: bold; padding-bottom: 1; }
+    ListView { height: 8; border: solid $primary; }
+    Horizontal { align: center middle; padding-top: 1; }
+    Button { margin: 0 1; }
+    """
+
+    def __init__(self, project_name: str, current_client_id: Optional[int] = None) -> None:
+        super().__init__()
+        self.project_name = project_name
+        self.current_client_id = current_client_id
+        self.clients = get_all_clients()
+        self.selected_id: Optional[int] = current_client_id
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="link-dialog"):
+            yield Static(f"Link {self.project_name} to client", id="link-title")
+            lv = ListView()
+            lv.append(ListItem(Label("(No client)"), id="client-none"))
+            for c in self.clients:
+                lv.append(ListItem(Label(f"{c.name} ({c.company})" if c.company else c.name), id=f"client-{c.id}"))
+            yield lv
+            with Horizontal():
+                yield Button("Link", id="link", variant="primary")
+                yield Button("Cancel", id="cancel")
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if event.item and event.item.id:
+            if event.item.id == "client-none":
+                self.selected_id = None
+            else:
+                self.selected_id = int(event.item.id.replace("client-", ""))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "link":
+            self.dismiss(self.selected_id)
+        else:
+            self.dismiss(self.current_client_id)  # No change
 
 
 # --- Widgets ---
@@ -416,6 +560,85 @@ class AlertsPanel(Static):
         return missing_files_map
 
 
+class ClientItem(ListItem):
+    """A single client in the list."""
+
+    def __init__(self, client: Client) -> None:
+        super().__init__()
+        self.client = client
+
+    def compose(self) -> ComposeResult:
+        display = f"● {self.client.name}"
+        if self.client.company:
+            display += f" [dim]({self.client.company})[/dim]"
+        yield Label(display)
+
+
+class ClientList(ListView):
+    """Left panel: selectable list of clients."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.clients: list[Client] = []
+
+    def on_mount(self) -> None:
+        self.load_clients()
+
+    def load_clients(self) -> None:
+        self.clear()
+        self.clients = get_all_clients()
+        for client in self.clients:
+            self.append(ClientItem(client))
+
+
+class ClientDetailPanel(Static):
+    """Right panel: client details."""
+
+    client_id = reactive(0)
+
+    def compose(self) -> ComposeResult:
+        yield Vertical(
+            Static("Select a client", id="client-header"),
+            Static("", id="client-info"),
+            Static("", id="client-projects"),
+            id="client-inner"
+        )
+
+    def watch_client_id(self, client_id: int) -> None:
+        if not client_id:
+            self.query_one("#client-header", Static).update("Select a client")
+            self.query_one("#client-info", Static).update("")
+            self.query_one("#client-projects", Static).update("")
+            return
+
+        client = get_client(client_id)
+        if not client:
+            return
+
+        self.query_one("#client-header", Static).update(f"[bold]{client.name}[/bold]")
+
+        info_parts = []
+        if client.company:
+            info_parts.append(f"[cyan]Company:[/cyan] {client.company}")
+        if client.email:
+            info_parts.append(f"[cyan]Email:[/cyan] {client.email}")
+        if client.phone:
+            info_parts.append(f"[cyan]Phone:[/cyan] {client.phone}")
+        if client.address:
+            info_parts.append(f"[cyan]Address:[/cyan] {client.address}")
+        if client.notes:
+            info_parts.append(f"\n[yellow]Notes:[/yellow]\n{client.notes}")
+
+        self.query_one("#client-info", Static).update("\n".join(info_parts) if info_parts else "[dim]No details[/dim]")
+
+        # Show linked projects
+        projects = get_projects_for_client(client_id)
+        if projects:
+            self.query_one("#client-projects", Static).update(f"\n[green]Projects:[/green]\n" + "\n".join(f"  • {p}" for p in projects))
+        else:
+            self.query_one("#client-projects", Static).update("\n[dim]No linked projects[/dim]")
+
+
 # --- Main App ---
 
 class HawkApp(App):
@@ -424,39 +647,56 @@ class HawkApp(App):
     TITLE = "hawk-tui"
     CSS = """
     Screen { layout: grid; grid-size: 2 2; grid-rows: 1fr auto; }
-    ProjectList { width: 25; border: solid green; padding: 0 1; }
-    ProjectList > ListItem { padding: 0 1; }
-    ProjectList > ListItem.--highlight { background: $accent; }
-    #details { border: solid green; padding: 1; }
-    #detail-header { text-style: bold; }
+    ProjectList, ClientList { width: 25; border: solid green; padding: 0 1; }
+    ProjectList > ListItem, ClientList > ListItem { padding: 0 1; }
+    ProjectList > ListItem.--highlight, ClientList > ListItem.--highlight { background: $accent; }
+    #details, #client-details { border: solid green; padding: 1; }
+    #detail-header, #client-header { text-style: bold; }
     #detail-meta { padding-bottom: 1; }
     #detail-progress { padding-bottom: 1; }
     #alerts { column-span: 2; height: auto; max-height: 5; border: solid yellow; padding: 0 1; }
     Footer { column-span: 2; }
     #empty-state { column-span: 2; row-span: 2; align: center middle; }
+    #view-indicator { column-span: 2; height: 1; background: $primary; color: $text; padding: 0 1; }
+    .hidden { display: none; }
     """
 
     BINDINGS = [
         Binding("q", "quit_app", "Quit"),
         Binding("f1", "help", "Help"),
+        Binding("tab", "switch_view", "Switch View"),
         Binding("c", "check", "Check"),
         Binding("s", "sync", "Sync"),
         Binding("e", "open_editor", "Editor"),
         Binding("a", "select_project", "AI Session"),
+        Binding("n", "new_client", "New Client"),
+        Binding("enter", "edit_client", "Edit", show=False),
+        Binding("d", "delete_client", "Delete", show=False),
+        Binding("l", "link_client", "Link Client"),
     ]
 
     current_project: str = ""
+    current_client_id: int = 0
+    current_view: str = "projects"  # "projects" or "clients"
     missing_files_map: list = []
 
     def compose(self) -> ComposeResult:
         yield Header()
+        yield Static("[Tab] Projects | Clients", id="view-indicator")
+
+        # Projects view
         project_list = ProjectList()
         if not PROJECTS_PATH.exists() or not any(PROJECTS_PATH.iterdir()):
             yield Static("[bold]Welcome to hawk-tui![/bold]\n\nNo projects found in ~/ai/projects/\n\nCreate a project folder to get started:\n  mkdir -p ~/ai/projects/my-project\n\nThen add project.md, session.md, gotchas.md", id="empty-state")
         else:
             yield project_list
             yield DetailPanel(id="details")
-            yield AlertsPanel(id="alerts")
+
+        # Clients view (hidden by default)
+        yield ClientList(classes="hidden")
+        yield ClientDetailPanel(id="client-details", classes="hidden")
+
+        yield AlertsPanel(id="alerts")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -476,6 +716,39 @@ class HawkApp(App):
         if isinstance(event.item, ProjectItem):
             self.current_project = event.item.project_name
             self.query_one(DetailPanel).project_name = event.item.project_name
+        elif isinstance(event.item, ClientItem):
+            self.current_client_id = event.item.client.id
+            self.query_one(ClientDetailPanel).client_id = event.item.client.id
+
+    def action_switch_view(self) -> None:
+        """Switch between Projects and Clients view."""
+        try:
+            project_list = self.query_one(ProjectList)
+            detail_panel = self.query_one(DetailPanel)
+            client_list = self.query_one(ClientList)
+            client_detail = self.query_one(ClientDetailPanel)
+            indicator = self.query_one("#view-indicator", Static)
+
+            if self.current_view == "projects":
+                # Switch to clients
+                self.current_view = "clients"
+                project_list.add_class("hidden")
+                detail_panel.add_class("hidden")
+                client_list.remove_class("hidden")
+                client_detail.remove_class("hidden")
+                client_list.focus()
+                indicator.update("[Tab] Projects | [bold]Clients[/bold]")
+            else:
+                # Switch to projects
+                self.current_view = "projects"
+                client_list.add_class("hidden")
+                client_detail.add_class("hidden")
+                project_list.remove_class("hidden")
+                detail_panel.remove_class("hidden")
+                project_list.focus()
+                indicator.update("[Tab] [bold]Projects[/bold] | Clients")
+        except Exception:
+            pass
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())
@@ -557,6 +830,64 @@ class HawkApp(App):
             self.notify(f"Opening in {editor}")
         else:
             self.notify("No valid repo path")
+
+    def action_new_client(self) -> None:
+        """Add a new client."""
+        def handle_client(client: Optional[Client]) -> None:
+            if client:
+                create_client(client)
+                self.query_one(ClientList).load_clients()
+                self.notify(f"Created client: {client.name}")
+        self.push_screen(ClientFormScreen(), handle_client)
+
+    def action_edit_client(self) -> None:
+        """Edit the selected client."""
+        if self.current_view != "clients" or not self.current_client_id:
+            return
+        client = get_client(self.current_client_id)
+        if not client:
+            return
+        def handle_client(updated: Optional[Client]) -> None:
+            if updated:
+                update_client(updated)
+                self.query_one(ClientList).load_clients()
+                self.query_one(ClientDetailPanel).client_id = updated.id
+                self.notify(f"Updated client: {updated.name}")
+        self.push_screen(ClientFormScreen(client), handle_client)
+
+    def action_delete_client(self) -> None:
+        """Delete the selected client."""
+        if self.current_view != "clients" or not self.current_client_id:
+            return
+        client = get_client(self.current_client_id)
+        if not client:
+            return
+        def handle_delete(confirmed: bool) -> None:
+            if confirmed:
+                delete_client(self.current_client_id)
+                self.current_client_id = 0
+                self.query_one(ClientList).load_clients()
+                self.query_one(ClientDetailPanel).client_id = 0
+                self.notify(f"Deleted client: {client.name}")
+        self.push_screen(DeleteClientScreen(client.name), handle_delete)
+
+    def action_link_client(self) -> None:
+        """Link current project to a client."""
+        if self.current_view != "projects" or not self.current_project:
+            self.notify("Select a project first")
+            return
+        current_client = get_client_for_project(self.current_project)
+        current_id = current_client.id if current_client else None
+        def handle_link(client_id: Optional[int]) -> None:
+            if client_id is None and current_id is not None:
+                from hawk.db import unlink_project_from_client
+                unlink_project_from_client(self.current_project)
+                self.notify(f"Unlinked {self.current_project}")
+            elif client_id is not None:
+                link_project_to_client(self.current_project, client_id)
+                client = get_client(client_id)
+                self.notify(f"Linked to {client.name}")
+        self.push_screen(LinkClientScreen(self.current_project, current_id), handle_link)
 
 
 def main():
