@@ -488,7 +488,7 @@ class HawkApp(App):
             repo_path = parse_repo_path(content)
             if repo_path and repo_path.exists():
                 try:
-                    subprocess.Popen(["code", str(repo_path)])
+                    subprocess.Popen(["antigravity", str(repo_path)])
                     self.notify(f"Opening {self.current_project} in editor")
                 except Exception as e:
                     self.notify(f"Failed to open editor: {e}")
