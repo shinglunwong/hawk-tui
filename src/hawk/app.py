@@ -84,20 +84,26 @@ def parse_repo_path(content: str) -> Path | None:
 
 def launch_iterm_session(repo_path: Path, tool: str) -> None:
     """Launch iTerm with AI tool in the repo directory."""
+    # Escape path for shell
+    path_str = str(repo_path).replace('"', '\\"')
     script = f'''
     tell application "iTerm"
         activate
-        tell current window
-            create tab with default profile
-            tell current session
-                write text "cd {repo_path} && {tool}"
-                delay 1
-                write text "read session context"
+        if (count of windows) = 0 then
+            create window with default profile
+        else
+            tell current window
+                create tab with default profile
             end tell
+        end if
+        tell current session of current window
+            write text "cd \\"{path_str}\\" && {tool}"
+            delay 1
+            write text "read session context"
         end tell
     end tell
     '''
-    subprocess.run(["osascript", "-e", script], capture_output=True)
+    subprocess.run(["osascript", "-e", script])
 
 
 # --- Screens ---
@@ -125,7 +131,7 @@ class HelpScreen(ModalScreen):
         with Vertical(id="help-dialog"):
             yield Static("hawk-tui Help", id="help-title")
             yield Static("[bold cyan]Keyboard Shortcuts[/bold cyan]", classes="section-title")
-            yield Static("↑↓        Navigate projects\nEnter     Start AI session\ne         Open in editor\nc         Check integrity\ns         Sync projects\nF1        This help\nq         Quit", classes="section")
+            yield Static("↑↓        Navigate projects\na         Start AI session\ne         Open in editor\nc         Check integrity\ns         Sync projects\nF1        This help\nq         Quit", classes="section")
             yield Static("[bold cyan]Daily Workflow[/bold cyan]", classes="section-title")
             yield Static("Morning: read context → work → update session", classes="section")
             yield Static("\n[dim]Press Escape or F1 to close[/dim]")
@@ -436,7 +442,7 @@ class HawkApp(App):
         Binding("c", "check", "Check"),
         Binding("s", "sync", "Sync"),
         Binding("e", "open_editor", "Editor"),
-        Binding("enter", "select_project", "Session", show=False),
+        Binding("a", "select_project", "AI Session"),
     ]
 
     current_project: str = ""
