@@ -1,0 +1,18 @@
+[project]
+name = "hawk-tui"
+version = "0.1.0"
+description = "Terminal dashboard for project management and AI workflows"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=7.3.0",
+]
+
+[project.scripts]
+hawk = "hawk.app:main"
+
+[tool.uv]
+package = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
