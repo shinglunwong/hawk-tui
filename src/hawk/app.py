@@ -152,6 +152,8 @@ class HelpScreen(ModalScreen):
 class ToolSelectScreen(ModalScreen[str]):
     """Modal to select AI tool."""
 
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
     CSS = """
     ToolSelectScreen { align: center middle; }
     #tool-dialog { width: 40; height: 12; border: thick $accent; background: $surface; padding: 1 2; }
@@ -174,9 +176,14 @@ class ToolSelectScreen(ModalScreen[str]):
         else:
             self.dismiss("")
 
+    def action_cancel(self) -> None:
+        self.dismiss("")
+
 
 class QuitScreen(ModalScreen[bool]):
     """Quit confirmation screen."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
     CSS = """
     QuitScreen { align: center middle; }
@@ -196,9 +203,14 @@ class QuitScreen(ModalScreen[bool]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "yes")
 
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
 
 class CreateFileScreen(ModalScreen[bool]):
     """Offer to create missing files."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
     CSS = """
     CreateFileScreen { align: center middle; }
@@ -225,9 +237,14 @@ class CreateFileScreen(ModalScreen[bool]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "yes")
 
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
 
 class RepoPathScreen(ModalScreen[str]):
     """Prompt for repo path."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
     CSS = """
     RepoPathScreen { align: center middle; }
@@ -256,9 +273,14 @@ class RepoPathScreen(ModalScreen[str]):
         else:
             self.dismiss("")
 
+    def action_cancel(self) -> None:
+        self.dismiss("")
+
 
 class ClientFormScreen(ModalScreen[Optional[Client]]):
     """Add or edit a client."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
     CSS = """
     ClientFormScreen { align: center middle; }
@@ -320,9 +342,14 @@ class ClientFormScreen(ModalScreen[Optional[Client]]):
         else:
             self.dismiss(None)
 
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
 
 class DeleteClientScreen(ModalScreen[bool]):
     """Confirm client deletion."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
     CSS = """
     DeleteClientScreen { align: center middle; }
@@ -346,9 +373,14 @@ class DeleteClientScreen(ModalScreen[bool]):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "yes")
 
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
 
 class LinkClientScreen(ModalScreen[Optional[int]]):
     """Link a project to a client."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
     CSS = """
     LinkClientScreen { align: center middle; }
@@ -390,6 +422,9 @@ class LinkClientScreen(ModalScreen[Optional[int]]):
             self.dismiss(self.selected_id)
         else:
             self.dismiss(self.current_client_id)  # No change
+
+    def action_cancel(self) -> None:
+        self.dismiss(self.current_client_id)  # No change
 
 
 # --- Widgets ---
