@@ -1,15 +1,67 @@
 """Main hawk-tui application."""
 
+import re
+import subprocess
+from datetime import datetime
 from pathlib import Path
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Footer, Header, Static, ListView, ListItem, Label
-from textual.containers import Vertical
+from textual.widgets import Footer, Header, Static, ListView, ListItem, Label, ProgressBar
+from textual.containers import Vertical, Horizontal
 from textual.reactive import reactive
 
 
 # Path to projects
 PROJECTS_PATH = Path.home() / "ai" / "projects"
+
+
+def get_git_branch(repo_path: Path) -> str:
+    """Get current git branch for a repo."""
+    if not repo_path.exists():
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            timeout=2
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def get_relative_time(dt: datetime) -> str:
+    """Convert datetime to relative time string."""
+    now = datetime.now()
+    diff = now - dt
+
+    if diff.days > 30:
+        return f"{diff.days // 30} months ago"
+    elif diff.days > 0:
+        return f"{diff.days} days ago" if diff.days > 1 else "yesterday"
+    elif diff.seconds > 3600:
+        hours = diff.seconds // 3600
+        return f"{hours} hours ago" if hours > 1 else "1 hour ago"
+    elif diff.seconds > 60:
+        mins = diff.seconds // 60
+        return f"{mins} min ago"
+    else:
+        return "just now"
+
+
+def parse_repo_path(content: str) -> Path | None:
+    """Extract repo path from project.md content."""
+    for line in content.split("\n"):
+        if line.startswith("Repo:"):
+            path_str = line.replace("Repo:", "").strip()
+            # Expand ~ to home directory
+            if path_str.startswith("~"):
+                path_str = str(Path.home()) + path_str[1:]
+            return Path(path_str)
+    return None
 
 
 class ProjectItem(ListItem):
@@ -66,6 +118,8 @@ class DetailPanel(Static):
     def compose(self) -> ComposeResult:
         yield Vertical(
             Static("Select a project", id="detail-header"),
+            Static("", id="detail-meta"),
+            Static("", id="detail-progress"),
             Static("", id="detail-content"),
             id="detail-inner"
         )
@@ -74,6 +128,8 @@ class DetailPanel(Static):
         """Update display when project changes."""
         if not name:
             self.query_one("#detail-header", Static).update("Select a project")
+            self.query_one("#detail-meta", Static).update("")
+            self.query_one("#detail-progress", Static).update("")
             self.query_one("#detail-content", Static).update("")
             return
 
@@ -82,11 +138,39 @@ class DetailPanel(Static):
         # Load project details
         project_path = PROJECTS_PATH / name
         content_parts = []
+        meta_parts = []
+
+        # Read project.md for repo path
+        project_md = project_path / "project.md"
+        repo_path = None
+        if project_md.exists():
+            project_content = project_md.read_text()
+            repo_path = parse_repo_path(project_content)
+
+        # Get git branch
+        if repo_path and repo_path.exists():
+            branch = get_git_branch(repo_path)
+            if branch:
+                meta_parts.append(f"[cyan]Branch:[/cyan] {branch}")
 
         # Read session.md for What's Next and Recent Work
         session_md = project_path / "session.md"
+        total_tasks = 0
+        done_tasks = 0
+
         if session_md.exists():
             session_content = session_md.read_text()
+
+            # Get last modified time
+            mtime = datetime.fromtimestamp(session_md.stat().st_mtime)
+            relative = get_relative_time(mtime)
+            date_str = mtime.strftime("%b %d")
+            meta_parts.append(f"[dim]{relative} ({date_str})[/dim]")
+
+            # Count checkboxes for progress
+            done_tasks = len(re.findall(r'\[x\]', session_content, re.IGNORECASE))
+            undone_tasks = len(re.findall(r'\[ \]', session_content))
+            total_tasks = done_tasks + undone_tasks
 
             # Extract What's Next
             whats_next = self._extract_section(session_content, "## What's Next")
@@ -101,6 +185,22 @@ class DetailPanel(Static):
                 content_parts.append("[blue]## Recent Work[/blue]")
                 content_parts.append(recent_work)
                 content_parts.append("")
+
+        # Update meta line
+        self.query_one("#detail-meta", Static).update("  ".join(meta_parts))
+
+        # Update progress bar
+        if total_tasks > 0:
+            progress_pct = done_tasks / total_tasks
+            bar_width = 20
+            filled = int(bar_width * progress_pct)
+            empty = bar_width - filled
+            bar = "█" * filled + "░" * empty
+            self.query_one("#detail-progress", Static).update(
+                f"[green]{bar}[/green] {done_tasks}/{total_tasks} tasks"
+            )
+        else:
+            self.query_one("#detail-progress", Static).update("")
 
         # Read gotchas.md
         gotchas_md = project_path / "gotchas.md"
@@ -156,6 +256,14 @@ class AlertsPanel(Static):
             if not (project_path / "gotchas.md").exists():
                 alerts.append(f"⚠ {name}: missing gotchas.md")
 
+            # Check for missing repo path
+            project_md = project_path / "project.md"
+            if project_md.exists():
+                content = project_md.read_text()
+                repo_path = parse_repo_path(content)
+                if repo_path and not repo_path.exists():
+                    alerts.append(f"⚠ {name}: repo path not found")
+
         if alerts:
             self.query_one("#alerts-content", Static).update("\n".join(alerts[:3]))
         else:
@@ -194,6 +302,14 @@ class HawkApp(App):
 
     #detail-header {
         text-style: bold;
+    }
+
+    #detail-meta {
+        color: $text-muted;
+        padding-bottom: 1;
+    }
+
+    #detail-progress {
         padding-bottom: 1;
     }
 
@@ -215,8 +331,11 @@ class HawkApp(App):
         Binding("f1", "help", "Help"),
         Binding("c", "check", "Check"),
         Binding("s", "sync", "Sync"),
+        Binding("e", "open_editor", "Editor"),
         Binding("enter", "select_project", "Open", show=False),
     ]
+
+    current_project: str = ""
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -240,18 +359,20 @@ class HawkApp(App):
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         """Handle project selection."""
         if isinstance(event.item, ProjectItem):
+            self.current_project = event.item.project_name
             detail_panel = self.query_one(DetailPanel)
             detail_panel.project_name = event.item.project_name
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         """Update details as user navigates."""
         if isinstance(event.item, ProjectItem):
+            self.current_project = event.item.project_name
             detail_panel = self.query_one(DetailPanel)
             detail_panel.project_name = event.item.project_name
 
     def action_help(self) -> None:
         """Show help screen."""
-        self.notify("Help: ↑↓ navigate, Enter select, q quit")
+        self.notify("Help: ↑↓ navigate, Enter session, e editor, q quit")
 
     def action_check(self) -> None:
         """Run integrity check."""
@@ -268,6 +389,29 @@ class HawkApp(App):
     def action_select_project(self) -> None:
         """Handle Enter key on project."""
         self.notify("Start session: not implemented yet (Phase 5)")
+
+    def action_open_editor(self) -> None:
+        """Open current project in editor."""
+        if not self.current_project:
+            self.notify("No project selected")
+            return
+
+        project_path = PROJECTS_PATH / self.current_project
+        project_md = project_path / "project.md"
+
+        if project_md.exists():
+            content = project_md.read_text()
+            repo_path = parse_repo_path(content)
+            if repo_path and repo_path.exists():
+                try:
+                    subprocess.Popen(["code", str(repo_path)])
+                    self.notify(f"Opening {self.current_project} in editor")
+                except Exception as e:
+                    self.notify(f"Failed to open editor: {e}")
+            else:
+                self.notify("No valid repo path found")
+        else:
+            self.notify("No project.md found")
 
 
 def main():
