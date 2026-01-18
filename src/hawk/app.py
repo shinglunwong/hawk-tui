@@ -7,8 +7,9 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Footer, Header, Static, ListView, ListItem, Label, ProgressBar
-from textual.containers import Vertical, Horizontal
+from textual.screen import ModalScreen
+from textual.widgets import Footer, Header, Static, ListView, ListItem, Label, Button
+from textual.containers import Vertical, Horizontal, Center
 from textual.reactive import reactive
 
 
@@ -62,6 +63,66 @@ def parse_repo_path(content: str) -> Path | None:
                 path_str = str(Path.home()) + path_str[1:]
             return Path(path_str)
     return None
+
+
+def launch_iterm_session(repo_path: Path, tool: str) -> None:
+    """Launch iTerm with AI tool in the repo directory."""
+    # AppleScript to open new iTerm tab, cd, and run tool
+    script = f'''
+    tell application "iTerm"
+        activate
+        tell current window
+            create tab with default profile
+            tell current session
+                write text "cd {repo_path} && {tool}"
+                delay 1
+                write text "read session context"
+            end tell
+        end tell
+    end tell
+    '''
+    subprocess.run(["osascript", "-e", script], capture_output=True)
+
+
+class ToolSelectScreen(ModalScreen[str]):
+    """Modal to select AI tool."""
+
+    CSS = """
+    ToolSelectScreen {
+        align: center middle;
+    }
+    #tool-dialog {
+        width: 40;
+        height: 12;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    #tool-title {
+        text-align: center;
+        text-style: bold;
+        padding-bottom: 1;
+    }
+    Button {
+        width: 100%;
+        margin: 1 0;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="tool-dialog"):
+            yield Static("Select AI Tool", id="tool-title")
+            yield Button("Claude Code", id="claude", variant="primary")
+            yield Button("OpenCode", id="opencode")
+            yield Button("Cancel", id="cancel", variant="error")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "claude":
+            self.dismiss("claude")
+        elif event.button.id == "opencode":
+            self.dismiss("opencode")
+        else:
+            self.dismiss("")
 
 
 class ProjectItem(ListItem):
@@ -387,8 +448,31 @@ class HawkApp(App):
         self.notify(f"Synced {len(project_list.projects)} projects")
 
     def action_select_project(self) -> None:
-        """Handle Enter key on project."""
-        self.notify("Start session: not implemented yet (Phase 5)")
+        """Handle Enter key on project - show tool selection."""
+        if not self.current_project:
+            self.notify("No project selected")
+            return
+
+        project_path = PROJECTS_PATH / self.current_project
+        project_md = project_path / "project.md"
+
+        if not project_md.exists():
+            self.notify("No project.md found")
+            return
+
+        content = project_md.read_text()
+        repo_path = parse_repo_path(content)
+
+        if not repo_path or not repo_path.exists():
+            self.notify("No valid repo path found")
+            return
+
+        def handle_tool_selection(tool: str) -> None:
+            if tool:
+                launch_iterm_session(repo_path, tool)
+                self.notify(f"Launching {tool} for {self.current_project}")
+
+        self.push_screen(ToolSelectScreen(), handle_tool_selection)
 
     def action_open_editor(self) -> None:
         """Open current project in editor."""
