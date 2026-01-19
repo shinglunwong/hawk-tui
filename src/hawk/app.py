@@ -727,8 +727,9 @@ class HawkApp(App):
 
     TITLE = "hawk-tui"
     CSS = """
-    Screen { layout: grid; grid-size: 2 2; grid-rows: 1fr auto; }
-    ProjectList, ClientList { width: 25; border: solid green; padding: 0 1; }
+    Screen { layout: grid; grid-size: 2 3; grid-rows: auto 1fr auto; }
+    #view-indicator { column-span: 2; height: 1; background: $primary; color: $text; padding: 0 1; }
+    ProjectList, ClientList { width: 30; border: solid green; padding: 0 1; }
     ProjectList > ListItem, ClientList > ListItem { padding: 0 1; }
     ProjectList > ListItem.--highlight, ClientList > ListItem.--highlight { background: $accent; }
     #details, #client-details { border: solid green; padding: 1; }
@@ -737,8 +738,7 @@ class HawkApp(App):
     #detail-progress { padding-bottom: 1; }
     #alerts { column-span: 2; height: auto; max-height: 5; border: solid yellow; padding: 0 1; }
     Footer { column-span: 2; }
-    #empty-state { column-span: 2; row-span: 2; align: center middle; }
-    #view-indicator { column-span: 2; height: 1; background: $primary; color: $text; padding: 0 1; }
+    #empty-state { column-span: 2; row-span: 1; align: center middle; }
     .hidden { display: none; }
     """
 
