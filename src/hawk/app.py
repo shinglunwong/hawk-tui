@@ -285,14 +285,14 @@ class ClientFormScreen(ModalScreen[Optional[Client]]):
 
     CSS = """
     ClientFormScreen { align: center middle; }
-    #client-dialog { width: 75; height: 30; border: thick $accent; background: $surface; padding: 1 2; }
+    #client-dialog { width: 75; height: 40; border: thick $accent; background: $surface; padding: 1 2; }
     #client-title { text-align: center; text-style: bold; padding-bottom: 1; }
     .field-row { height: 3; }
     .field-label { width: 14; padding-top: 1; }
     .field-input { width: 1fr; }
     .section-title { text-style: bold; color: $accent; padding-top: 1; }
-    Horizontal { align: center middle; padding-top: 1; }
-    Button { margin: 0 1; }
+    #button-row { padding-top: 1; }
+    #button-row Button { margin: 0 1; }
     """
 
     def __init__(self, client: Optional[Client] = None) -> None:
@@ -333,7 +333,7 @@ class ClientFormScreen(ModalScreen[Optional[Client]]):
             with Horizontal(classes="field-row"):
                 yield Static("Notes:", classes="field-label")
                 yield Input(value=self.client.notes if self.client else "", id="notes", classes="field-input")
-            with Horizontal():
+            with Horizontal(id="button-row"):
                 yield Button("Save", id="save", variant="primary")
                 yield Button("Cancel", id="cancel")
 
