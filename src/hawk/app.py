@@ -6,8 +6,8 @@ from textual.widgets import Footer, Header, Static, ListView
 from textual.containers import Vertical
 
 from hawk.config import PROJECTS_PATH
-from hawk.db import Client, get_client, create_client, update_client, delete_client
-from hawk.screens import ClientFormScreen, DeleteClientScreen, HealthCheckScreen
+from hawk.db import Client, get_client, delete_client, CLIENTS_PATH
+from hawk.screens import DeleteClientScreen, HealthCheckScreen
 from hawk.widgets import (
     ProjectList,
     DetailPanel,
@@ -271,29 +271,22 @@ class HawkApp(App):
         self.exit()
 
     def action_new_client(self) -> None:
-        def handle_client(client: Optional[Client]) -> None:
-            if client:
-                create_client(client)
-                self.query_one(ClientList).load_clients()
-                self.notify(f"Created client: {client.name}")
+        import subprocess
+        from hawk.config import load_config
 
-        self.push_screen(ClientFormScreen(), handle_client)
+        config = load_config()
+        editor = config.get("tools", {}).get("editor", "code")
+        subprocess.Popen([editor, str(CLIENTS_PATH)])
+        self.notify(f"Opening {CLIENTS_PATH.name} in {editor}")
 
     def _edit_client(self) -> None:
-        if not self.current_client_id:
-            return
-        client = get_client(self.current_client_id)
-        if not client:
-            return
+        import subprocess
+        from hawk.config import load_config
 
-        def handle_client(updated: Optional[Client]) -> None:
-            if updated:
-                update_client(updated)
-                self.query_one(ClientList).load_clients()
-                self.query_one(ClientDetailPanel).client_id = updated.id
-                self.notify(f"Updated client: {updated.name}")
-
-        self.push_screen(ClientFormScreen(client), handle_client)
+        config = load_config()
+        editor = config.get("tools", {}).get("editor", "code")
+        subprocess.Popen([editor, str(CLIENTS_PATH)])
+        self.notify(f"Opening {CLIENTS_PATH.name} in {editor}")
 
     def action_delete_client(self) -> None:
         if self.current_view != "clients" or not self.current_client_id:
